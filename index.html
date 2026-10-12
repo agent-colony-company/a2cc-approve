@@ -31,7 +31,9 @@
 // A2CC approval Mini App (vega, 2026-10-12; the Chair: "evet Face ID kur, GitHub Pages kullan").
 // Static page, no secrets. Enrollment makes a P-256 key pair on the phone: the private key is stored with Telegram's
 // BiometricManager (released only after Face ID), the public key goes to the bot. An approval signs, after Face ID,
-// "A2CC-APPROVE|v1|<code>|<sha256 of the exact text shown on this screen>" and returns it with sendData.
+// "A2CC-APPROVE|v2|<code>|<sha256 of the exact text shown on this screen>|<expiry>" and returns it with sendData.
+// Known limit (audits 2026-10-12): the key is a software key that Face ID RELEASES to this page; whoever can change this
+// page can copy it. Enrollment waits for the Chair's decision on that limit.
 (() => {
   const $ = (id) => document.getElementById(id);
   const status = (msg) => { $('status').textContent = msg; };
@@ -44,7 +46,8 @@
   const hex = (buf) => Array.from(new Uint8Array(buf)).map((x) => x.toString(16).padStart(2, '0')).join('');
   const sha256hex = async (bytes) => hex(await crypto.subtle.digest('SHA-256', bytes));
 
-  if (!tg || !tg.initData) { status('Bu sayfa yalnız Telegram içinden, botun düğmesiyle açılır.'); return; }
+  // A keyboard-button launch carries EMPTY initData (Telegram docs); identity is the bot's job (sender id + signature).
+  if (!tg || tg.platform === 'unknown') { status('Bu sayfa yalnız Telegram içinden, botun düğmesiyle açılır.'); return; }
   tg.ready(); tg.expand();
   const bm = tg.BiometricManager;
   if (!bm) { status('Bu Telegram sürümü biyometrik doğrulamayı desteklemiyor. Telegram\'ı güncelleyin.'); return; }
@@ -70,7 +73,7 @@
         const kp = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
         const priv = b64(await crypto.subtle.exportKey('pkcs8', kp.privateKey));
         const spki = await crypto.subtle.exportKey('spki', kp.publicKey);
-        const fp = (await sha256hex(spki)).slice(0, 12);
+        const fp = (await sha256hex(spki)).slice(0, 20);
         bm.updateBiometricToken(priv, (ok) => {
           if (!ok) { status('Anahtar telefonun güvenli alanına kaydedilemedi.'); $('go').disabled = false; return; }
           $('action').innerHTML = 'Anahtar kaydedildi. Açık anahtarın parmak izi:<br><span class="fp"></span><br><br>'
@@ -86,8 +89,9 @@
 
   const approve = () => {
     const c = q.get('c') || '';
+    const e = q.get('e') || '';
     const t = q.get('t') || '';
-    if (!/^[0-9A-F]{6}$/.test(c) || !t || t.length > 900) { status('Geçersiz onay bağlantısı.'); return; }
+    if (!/^[0-9A-F]{6}$/.test(c) || !/^[0-9]{10}$/.test(e) || !t || t.length > 900) { status('Geçersiz onay bağlantısı.'); return; }
     $('title').textContent = 'Onay ' + c;
     $('action').textContent = t;                                   // exactly the text that is signed (by its sha256)
     $('go').textContent = 'Face ID ile onayla'; $('go').hidden = false;
@@ -102,8 +106,8 @@
             false, ['sign']);
           const a = await sha256hex(enc.encode(t));
           const sig = b64(await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key,
-            enc.encode('A2CC-APPROVE|v1|' + c + '|' + a)));
-          send({ v: 1, kind: 'approve', c, a, sig });
+            enc.encode('A2CC-APPROVE|v2|' + c + '|' + a + '|' + e)));
+          send({ v: 1, kind: 'approve', c, a, e, sig });
         } catch (e) { status('Hata: ' + e.message); }
       });
     });
